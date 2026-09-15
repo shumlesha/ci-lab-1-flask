@@ -18,3 +18,136 @@
 #
 # Готовый workflow здесь намеренно не приводится.
 # =========================================================
+
+
+name: Lab 1 - Flask CI
+
+on:
+  push:
+    branches: [main, lab1]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: # Для экономии ресурсов
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_DIR: .
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality:
+    name: Lab 1 quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+
+    steps:
+      - name: 📥 Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # (v7.0.1)
+        with:
+          persist-credentials: false
+
+      - name: 🐍 Set up Python and pip cache
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # (v7.0.0)
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            ${{ env.PROJECT_DIR }}/requirements*.txt
+            ${{ env.PROJECT_DIR }}/pyproject.toml
+
+      - name: 📦 Install dependencies
+        id: install
+        run: |
+          python --version
+          python -m pip --version
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: 🔍 Lint
+        id: lint
+        run: python -m flake8 app tests run.py
+
+      - name: 🧪 Tests and coverage quality gate
+        id: tests
+        run: python -m pytest --color=yes
+
+      - name: 🏗️ Build sdist and wheel
+        id: build
+        run: python -m build
+
+      - name: 🔥 Smoke-test the installed wheel
+        id: smoke
+        run: |
+          python -m venv "$RUNNER_TEMP/lab1-wheel-venv"
+          "$RUNNER_TEMP/lab1-wheel-venv/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/lab1-wheel-venv/bin/python" -m pip check
+          "$RUNNER_TEMP/lab1-wheel-venv/bin/python" -I - <<'PY'
+          import app
+
+          application = app.create_app()
+          application.config.update(TESTING=True)
+          response = application.test_client().get("/health")
+          assert response.status_code == 200, response.status_code
+          assert response.get_json() == {"status": "ok"}, response.data
+          print(f"Installed package: {app.__file__}")
+          print("Wheel smoke test: PASS")
+          PY
+
+      - name: 📤 Upload distributions # Сохраняем сборку
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # (v7.0.1)
+        with:
+          name: lab1-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROJECT_DIR }}/dist/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: 📊 Upload test and coverage reports # Сохраняем отчеты
+        if: ${{ !cancelled() && (steps.tests.outcome == 'success' || steps.tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # (v7.0.1)
+        with:
+          name: lab1-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROJECT_DIR }}/reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 📝 Write job summary
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome || 'not run' }}
+          LINT_RESULT: ${{ steps.lint.outcome || 'not run' }}
+          TEST_RESULT: ${{ steps.tests.outcome || 'not run' }}
+          BUILD_RESULT: ${{ steps.build.outcome || 'not run' }}
+          SMOKE_RESULT: ${{ steps.smoke.outcome || 'not run' }}
+        run: |
+          {
+            echo "## Lab 1 - Flask CI"
+            echo
+            echo '| Stage | Result |'
+            echo '| :--- | :--- |'
+            printf '| Install | %s |\n' "$INSTALL_RESULT"
+            printf '| Lint | %s |\n' "$LINT_RESULT"
+            printf '| Tests and coverage gate | %s |\n' "$TEST_RESULT"
+            printf '| Build | %s |\n' "$BUILD_RESULT"
+            printf '| Installed wheel smoke test | %s |\n' "$SMOKE_RESULT"
+            echo
+            echo 'Coverage policy: setup.cfg, application statements and branches.'
+            echo
+            if [[ -f "$PROJECT_DIR/reports/coverage.md" ]]; then
+              cat "$PROJECT_DIR/reports/coverage.md"
+            else
+              echo 'Coverage report was not produced. See the failed step.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

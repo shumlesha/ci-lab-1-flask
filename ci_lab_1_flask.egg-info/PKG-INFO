@@ -1,0 +1,87 @@
+Metadata-Version: 2.4
+Name: ci-lab-1-flask
+Version: 0.1.0
+Summary: Minimal Flask application for the CI laboratory
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: Flask==3.1.3
+
+# Flask CI Lab — стартовый проект
+
+Стартовый проект для лабораторной работы №1
+«Настройка базового CI-пайплайна».
+
+Стартовый проект уже содержит минимальное Flask-приложение,
+тест и необходимые зависимости.
+
+Файлы `setup.cfg` и `.github/workflows/ci.yml` являются
+заготовками с подсказками. Готового решения лабораторной
+в них нет.
+
+## Проверка проекта
+
+### Создание виртуального окружения
+
+Windows PowerShell:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+macOS / Linux:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### Установка зависимостей
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Тесты
+
+```bash
+pytest
+```
+
+### Покрытие
+
+```bash
+pytest --cov=app --cov-report=term --cov-report=xml
+```
+
+### Линтинг
+
+```bash
+flake8 app tests
+```
+
+### Сборка / проверка синтаксиса
+
+```bash
+python -m py_compile app/*.py
+```
+
+### Запуск приложения
+
+```bash
+python run.py
+```
+
+Проверочный адрес:
+
+http://127.0.0.1:5000/health
+
+Ожидаемый ответ:
+
+```json
+{"status": "ok"}
+```
+
+После проверки стартового проекта выполняйте лабораторную
+работу по методическим указаниям.
