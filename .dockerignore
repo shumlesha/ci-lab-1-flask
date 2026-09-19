@@ -1,0 +1,17 @@
+# Allowlist
+**
+!app/
+!app/**
+!pyproject.toml
+!README.md
+!requirements*.txt
+!Dockerfile
+!Dockerfile.singlestage
+
+# Blocklist
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.pem
+**/*.key

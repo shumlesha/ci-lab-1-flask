@@ -1,32 +1,10 @@
-# =========================================================
-# САМОСТОЯТЕЛЬНАЯ РАБОТА
-# =========================================================
-#
-# Разработайте CI-пайплайн согласно разделу 5.4.1.
-#
-# Необходимо самостоятельно настроить:
-# 1. запуск при push в main;
-# 2. запуск при Pull Request в main;
-# 3. Ubuntu;
-# 4. checkout исходного кода;
-# 5. установку Python с кэшированием;
-# 6. установку зависимостей;
-# 7. lint;
-# 8. тесты с покрытием / Quality Gate;
-# 9. build;
-# 10. при желании — сохранение отчёта покрытия.
-#
-# Готовый workflow здесь намеренно не приводится.
-# =========================================================
-
-
-name: Lab 1 - Flask CI
+name: Flask CI - quality and container
 
 on:
   push:
-    branches: [main, lab1]
+    branches: [ main, lab1, lab2-docker-registry ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -34,7 +12,7 @@ permissions:
 
 concurrency: # Для экономии ресурсов
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PROJECT_DIR: .
@@ -149,5 +127,284 @@ jobs:
               cat "$PROJECT_DIR/reports/coverage.md"
             else
               echo 'Coverage report was not produced. See the failed step.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  container:
+    name: Lab 2 container gate
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+    env:
+      TRIVY_VERSION: "0.72.0"
+      DOCKER_BUILD_RECORD_RETENTION_DAYS: "14"
+
+    steps:
+      - name: Check out the same code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare image names and report directory
+        id: meta
+        run: |
+          mkdir -p reports/container
+          revision="$(git rev-parse HEAD)"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${revision:0:12}-run-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          local_image="lab2-flask:ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "revision=$revision"
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "local_image=$local_image"
+            echo "published_image=$image:$tag"
+          } >> "$GITHUB_OUTPUT"
+          {
+            printf 'Source revision: %s\n' "$revision"
+            printf 'Candidate tag: %s:%s\n' "$image" "$tag"
+            printf 'Platform: linux/amd64\n'
+            grep '^ARG PYTHON_.*_IMAGE=' Dockerfile
+          } > reports/container/build-inputs.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image, import and export layer cache (no push)
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          pull: true
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.local_image }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=lab2-flask-linux-amd64,version=2
+          cache-to: type=gha,scope=lab2-flask-linux-amd64,mode=max,version=2
+
+      - name: Record the built image identity
+        id: identity
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+        run: |
+          docker image inspect "$LOCAL_IMAGE" > reports/container/image-inspect.json
+          image_id="$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")"
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          printf 'Local image configuration ID: %s\n' "$image_id"
+
+      - name: Install checksum-verified Trivy
+        run: |
+          archive="$RUNNER_TEMP/trivy-${TRIVY_VERSION}.tar.gz"
+          expected="bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" "$url"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/trivy-bin" trivy
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+
+      - name: Full vulnerability report
+        id: report
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+        run: |
+          trivy image --image-src docker --scanners vuln --list-all-pkgs \
+            --exit-code 0 --format json \
+            --output reports/container/trivy-full.json "$LOCAL_IMAGE"
+          trivy convert --format table \
+            --output reports/container/trivy-full.txt \
+            reports/container/trivy-full.json
+          cat reports/container/trivy-full.txt
+          trivy --version > reports/container/trivy-version.txt
+
+      - name: Generate CycloneDX SBOM from the full inventory
+        id: sbom
+        run: |
+          trivy convert --format cyclonedx \
+            --output reports/container/sbom.cdx.json \
+            reports/container/trivy-full.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("reports/container/sbom.cdx.json").read_text())
+          assert data.get("bomFormat") == "CycloneDX", "Unexpected SBOM format"
+          assert data.get("components"), "SBOM contains no components"
+          print(f"SBOM components: {len(data['components'])}")
+          PY
+
+      - name: Vulnerability quality gate (HIGH and CRITICAL)
+        id: gate
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+        run: |
+          trivy image --image-src docker --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            --skip-db-update --format table "$LOCAL_IMAGE" \
+            | tee reports/container/trivy-gate.txt
+
+      - name: Smoke-test the container over HTTP
+        id: smoke
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+        run: |
+          name="lab2-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker logs "$name" > reports/container/container.log 2>&1 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name "$name" \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --pids-limit 128 --memory 256m --cpus 1 \
+            --publish 127.0.0.1:5000:5000 "$LOCAL_IMAGE"
+          ready=0
+          for attempt in {1..30}; do
+            if curl --fail --silent --max-time 2 \
+                http://127.0.0.1:5000/health > reports/container/health.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo '::error::Container did not become ready in time.'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          response = json.loads(Path("reports/container/health.json").read_text())
+          assert response == {"status": "ok"}, response
+          print("Container HTTP smoke test: PASS")
+          PY
+
+      - name: Preserve full scan and diagnostic reports, including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab2-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROJECT_DIR }}/reports/container/trivy-*
+            ${{ env.PROJECT_DIR }}/reports/container/build-inputs.txt
+            ${{ env.PROJECT_DIR }}/reports/container/image-inspect.json
+            ${{ env.PROJECT_DIR }}/reports/container/container.log
+            ${{ env.PROJECT_DIR }}/reports/container/health.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Preserve SBOM
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab2-sbom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROJECT_DIR }}/reports/container/sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Log in to GHCR
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the exact scanned image without rebuilding
+        id: publish
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          EXPECTED_ID: ${{ steps.identity.outputs.image_id }}
+          PUBLISHED_IMAGE: ${{ steps.meta.outputs.published_image }}
+          IMAGE_NAME: ${{ steps.meta.outputs.image }}
+        run: |
+          actual_id="$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")"
+          if [[ "$actual_id" != "$EXPECTED_ID" ]]; then
+            echo '::error::The local image identity changed after the build.'
+            exit 1
+          fi
+          docker tag "$LOCAL_IMAGE" "$PUBLISHED_IMAGE"
+          docker push "$PUBLISHED_IMAGE" | tee reports/container/push.log
+          docker image inspect "$PUBLISHED_IMAGE" > reports/container/published-inspect.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          info = json.loads(Path("reports/container/published-inspect.json").read_text())[0]
+          prefix = os.environ["IMAGE_NAME"] + "@sha256:"
+          references = [ref for ref in info.get("RepoDigests", []) if ref.startswith(prefix)]
+          if not references:
+              raise SystemExit("Registry manifest digest was not returned after push")
+          reference = references[0]
+          tag = os.environ["PUBLISHED_IMAGE"]
+          Path("reports/container/publication.txt").write_text(
+              f"Tag: {tag}\nImmutable reference: {reference}\n", encoding="utf-8"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"immutable_ref={reference}\n")
+          print(f"Published: {reference}")
+          PY
+
+      - name: Preserve publication identity
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab2-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROJECT_DIR }}/reports/container/publication.txt
+            ${{ env.PROJECT_DIR }}/reports/container/published-inspect.json
+            ${{ env.PROJECT_DIR }}/reports/container/push.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write container job summary
+        if: ${{ !cancelled() }}
+        env:
+          BUILD_RESULT: ${{ steps.image.outcome || 'not run' }}
+          REPORT_RESULT: ${{ steps.report.outcome || 'not run' }}
+          SBOM_RESULT: ${{ steps.sbom.outcome || 'not run' }}
+          GATE_RESULT: ${{ steps.gate.outcome || 'not run' }}
+          SMOKE_RESULT: ${{ steps.smoke.outcome || 'not run' }}
+          PUBLISH_RESULT: ${{ steps.publish.outcome || 'not run' }}
+        run: |
+          {
+            echo '## Lab 2 - Container verification'
+            echo
+            echo '| Stage | Result |'
+            echo '| :--- | :--- |'
+            printf '| Image build | %s |\n' "$BUILD_RESULT"
+            printf '| Full vulnerability report | %s |\n' "$REPORT_RESULT"
+            printf '| CycloneDX SBOM | %s |\n' "$SBOM_RESULT"
+            printf '| Fixable HIGH/CRITICAL gate | %s |\n' "$GATE_RESULT"
+            printf '| Container HTTP smoke test | %s |\n' "$SMOKE_RESULT"
+            printf '| GHCR publication | %s |\n' "$PUBLISH_RESULT"
+            echo
+            echo 'PRs and non-main branches are verified, but never published.'
+            echo 'The full report includes vulnerabilities omitted from the gate.'
+            echo 'Skipped publication on PRs is expected; it is not a failed test.'
+            if [[ -f reports/container/publication.txt ]]; then
+              echo
+              echo '```text'
+              cat reports/container/publication.txt
+              echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
