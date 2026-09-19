@@ -1,0 +1,13 @@
+ARG PYTHON_BUILD_IMAGE=python:3.12.14-trixie@sha256:ffe26975518e90491ad275249ee202584dd8dccbe82b3ff93420a34d2a1db986
+FROM ${PYTHON_BUILD_IMAGE}
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /app
+COPY . .
+RUN python -m pip install --no-cache-dir \
+        -r requirements.txt -r requirements-container.txt \
+    && python -m build \
+    && python -m pip install --no-cache-dir --no-deps dist/*.whl
+EXPOSE 5000
+CMD ["gunicorn", "--bind=0.0.0.0:5000", "--workers=2", "--worker-class=gthread", "--threads=2", "--timeout=30", "--graceful-timeout=30", "--worker-tmp-dir=/tmp", "--access-logfile=-", "--error-logfile=-", "app:create_app()"]
