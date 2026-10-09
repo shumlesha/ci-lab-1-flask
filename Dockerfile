@@ -27,6 +27,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Creating user without root
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid 10001 --no-create-home \
