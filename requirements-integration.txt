@@ -1,0 +1,3 @@
+-r requirements.txt
+testcontainers[postgres,redis]==4.15.0
+pytest-xdist==3.8.0

@@ -1,8 +1,8 @@
-name: Flask CI - quality and container
+name: Flask CI - quality, integration and promotion
 
 on:
   push:
-    branches: [ main, lab1, lab2-docker-registry ]
+    branches: [ main, lab1, lab2-docker-registry, lab3-integration-promotion ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -54,11 +54,16 @@ jobs:
 
       - name: 🔍 Lint
         id: lint
-        run: python -m flake8 app tests run.py
+        run: python -m flake8 app tests scripts run.py
+
+      - name: Check delivery shell syntax
+        run: |
+          bash -n scripts/promote_image.sh
+          bash -n scripts/update_gitops.sh
 
       - name: 🧪 Tests and coverage quality gate
         id: tests
-        run: python -m pytest --color=yes
+        run: python -m pytest tests/unit --color=yes
 
       - name: 🏗️ Build sdist and wheel
         id: build
@@ -72,7 +77,9 @@ jobs:
           "$RUNNER_TEMP/lab1-wheel-venv/bin/python" -m pip check
           "$RUNNER_TEMP/lab1-wheel-venv/bin/python" -I - <<'PY'
           import app
+          from importlib.resources import files
 
+          assert "CREATE TABLE" in files("app").joinpath("schema.sql").read_text()
           application = app.create_app()
           application.config.update(TESTING=True)
           response = application.test_client().get("/health")
@@ -130,9 +137,62 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  integration:
+    name: Lab 3 integration gate
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+    steps:
+      - name: Check out the same source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and cache
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install integration dependencies
+        run: |
+          python -m pip install -r requirements-integration.txt
+          python -m pip check
+
+      - name: Sequential and parallel real integration tests
+        run: python scripts/run_integration.py --mode compare --workers 2 --repeat 1
+
+      - name: Preserve measurements, JUnit, container logs and cleanup evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab3-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/integration/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Write integration summary
+        if: ${{ always() }}
+        run: |
+          if [[ -f reports/integration/benchmark.md ]]; then
+            cat reports/integration/benchmark.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No measurements; inspect the failed setup step.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   container:
     name: Lab 2 container gate
-    needs: quality
+    needs: [ quality, integration ]
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      revision: ${{ steps.meta.outputs.revision }}
+      immutable_ref: ${{ steps.publish.outputs.immutable_ref }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -408,3 +468,98 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+
+
+  promote-to-staging:
+    name: Lab 3 immutable image promotion
+    needs: container
+    if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      staging_ref: ${{ steps.promote.outputs.staging_ref }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out promotion tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Skopeo from the signed Ubuntu package repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+
+      - name: Copy by digest and independently verify the staging tag
+        id: promote
+        env:
+          SOURCE_REF: ${{ needs.container.outputs.immutable_ref }}
+          SOURCE_IMAGE: ${{ needs.container.outputs.image }}
+          SOURCE_TAG: ${{ needs.container.outputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/promote_image.sh
+
+      - name: Preserve promotion identity and inspection reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab3-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/promotion/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Write promotion summary
+        if: ${{ always() }}
+        run: |
+          if [[ -f reports/promotion/promotion.txt ]]; then
+            cat reports/promotion/promotion.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  update-manifest:
+    name: Lab 3 GitOps desired state
+    needs: [ container, promote-to-staging ]
+    if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: gitops-staging-${{ github.repository }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the tested templates, not an untested newer main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the YAML parser
+        run: python -m pip install PyYAML==6.0.3
+      - name: Commit the desired state to the deployment branch
+        env:
+          STAGING_REF: ${{ needs.promote-to-staging.outputs.staging_ref }}
+          SOURCE_REVISION: ${{ needs.container.outputs.revision }}
+          GITOPS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/update_gitops.sh
+
+      - name: Preserve the actual Git diff and commit identity
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab3-gitops-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/gitops/
+          if-no-files-found: warn
+          retention-days: 14
