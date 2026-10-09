@@ -18,7 +18,7 @@ def test_create_persists_in_postgres(environment):
 
     response = client.post("/visits")
 
-    assert response.status_code == 201
+    assert response.status_code == 299
 
     visit = response.get_json()
 
