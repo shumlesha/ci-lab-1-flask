@@ -22,7 +22,7 @@ spec:
       labels:
         app: ci-lab-flask
       annotations:
-        lab3/source-revision: bootstrap
+        lab3/source-revision: 0b8a9600d66a19fa277591b69852e415cca6f0d9
     spec:
       automountServiceAccountToken: false
       nodeSelector:
@@ -37,7 +37,7 @@ spec:
           type: RuntimeDefault
       initContainers:
       - name: schema-init
-        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:bootstrap
+        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:sha-0b8a9600d66a-run-27-1@sha256:356a1bb6eaad9ff7ddbb572a293f1fb19c9d3ef34f92b129b68b815c2f207457
         imagePullPolicy: IfNotPresent
         command:
         - python
@@ -64,7 +64,7 @@ spec:
             memory: 256Mi
       containers:
       - name: app
-        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:bootstrap
+        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:sha-0b8a9600d66a-run-27-1@sha256:356a1bb6eaad9ff7ddbb572a293f1fb19c9d3ef34f92b129b68b815c2f207457
         imagePullPolicy: IfNotPresent
         ports:
         - name: http
