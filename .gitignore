@@ -9,3 +9,14 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Generated output and local credentials
+reports/
+dist/
+build/
+*.egg-info/
+.coverage.*
+.tools/
+.env
+.env.*
+!*.example

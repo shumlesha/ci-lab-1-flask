@@ -1,5 +1,5 @@
 # Build
-ARG PYTHON_BUILD_IMAGE=python:3.12.14-trixie@sha256:ffe26975518e90491ad275249ee202584dd8dccbe82b3ff93420a34d2a1db986
+ARG PYTHON_BUILD_IMAGE=python:3.12.14-trixie@sha256:4d1caded1f729ae443eb803f26ffde7b61e696aeaef62f099abb6dd6b14257c7
 ARG PYTHON_RUNTIME_IMAGE=python:3.12.14-slim-trixie@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 FROM ${PYTHON_BUILD_IMAGE} AS build
@@ -26,6 +26,8 @@ FROM ${PYTHON_RUNTIME_IMAGE} AS runtime
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Creating user without root
 RUN groupadd --gid 10001 app \

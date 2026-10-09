@@ -17,3 +17,6 @@ dependencies = {file = ["requirements-runtime.txt"]}
 where = ["."]
 include = ["app", "app.*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+app = ["schema.sql"]
