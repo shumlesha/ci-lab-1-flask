@@ -2,7 +2,12 @@ name: Flask CI - quality, integration and promotion
 
 on:
   push:
-    branches: [ main, lab1, lab2-docker-registry, lab3-integration-promotion ]
+    branches:
+      - main
+      - lab1
+      - lab2-docker-registry
+      - lab3-integration-promotion
+      - lab4-deployment-rollback
   pull_request:
     branches: [ main ]
   workflow_dispatch:
