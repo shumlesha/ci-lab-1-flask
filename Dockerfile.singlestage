@@ -14,4 +14,4 @@ RUN python -m pip install --no-cache-dir \
     && python -m build \
     && python -m pip install --no-cache-dir --no-deps dist/*.whl
 EXPOSE 5000
-CMD ["gunicorn", "--bind=0.0.0.0:5000", "--workers=1", "--worker-class=gthread", "--threads=4", "--timeout=30", "--graceful-timeout=30", "--worker-tmp-dir=/tmp", "--access-logfile=-", "--error-logfile=-", "app:create_app()"]
+CMD ["gunicorn", "--no-control-socket", "--bind=0.0.0.0:5000", "--workers=1", "--worker-class=gthread", "--threads=4", "--timeout=30", "--graceful-timeout=30", "--worker-tmp-dir=/tmp", "--access-logfile=-", "--error-logfile=-", "app:create_app()"]

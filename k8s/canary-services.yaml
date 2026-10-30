@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-lab-flask-stable
+  namespace: staging
+spec:
+  type: ClusterIP
+  selector:
+    app: ci-lab-flask
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-lab-flask-canary
+  namespace: staging
+spec:
+  type: ClusterIP
+  selector:
+    app: ci-lab-flask
+  ports:
+  - name: http
+    port: 80
+    targetPort: http

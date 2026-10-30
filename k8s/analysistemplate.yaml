@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+  namespace: staging
+spec:
+  metrics:
+  - name: error-rate
+    initialDelay: 45s
+    interval: 30s
+    successCondition: len(result) == 1 && !isNaN(result[0]) && result[0] >= 0 && result[0]
+      < 0.01
+    failureLimit: 1
+    consecutiveErrorLimit: 3
+    provider:
+      prometheus:
+        address: http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          (
+            sum(rate(http_requests_total{
+              namespace="staging", app="ci-lab-flask",
+              route="/demo", status_code=~"5.."
+            }[1m])) or on() vector(0)
+          )
+          /
+          sum(rate(http_requests_total{
+            namespace="staging", app="ci-lab-flask", route="/demo"
+          }[1m]))
