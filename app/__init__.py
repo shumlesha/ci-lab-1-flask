@@ -1,17 +1,18 @@
 import atexit
 import os
+import random
 from collections.abc import Mapping
 from typing import Any
 
 import click
 from flask import Flask, jsonify, url_for
 
+from app.observability import configure_metrics
 from app.storage import PostgresVisitStore, RedisVisitCache, Resources
 from app.visits import StorageUnavailable, VisitService
 
 
 def close_app(application: Flask) -> None:
-    """Close process-scoped resources, NOT once per HTTP request."""
     resources = application.extensions.pop("lab3_resources", None)
 
     if resources is not None:
@@ -20,9 +21,9 @@ def close_app(application: Flask) -> None:
 
 
 def create_app(
-    test_config: Mapping[str, Any] | None = None,
-    *,
-    service: VisitService | None = None,
+        test_config: Mapping[str, Any] | None = None,
+        *,
+        service: VisitService | None = None,
 ) -> Flask:
     application = Flask(__name__)
 
@@ -30,10 +31,22 @@ def create_app(
         DATABASE_URL=os.environ.get("DATABASE_URL", ""),
         REDIS_URL=os.environ.get("REDIS_URL", ""),
         CACHE_TTL_SECONDS=os.environ.get("CACHE_TTL_SECONDS", "60"),
+        APP_VERSION=os.environ.get("APP_VERSION", "stable"),
+        CHAOS_MODE=os.environ.get("CHAOS_MODE", "false"),
     )
 
     if test_config is not None:
         application.config.update(test_config)
+
+    chaos = application.config["CHAOS_MODE"]
+    if isinstance(chaos, str):
+        chaos = chaos.strip().lower()
+        if chaos not in {"true", "false"}:
+            raise ValueError("CHAOS_MODE must be true or false")
+        chaos = chaos == "true"
+    elif not isinstance(chaos, bool):
+        raise ValueError("CHAOS_MODE must be true or false")
+    application.config["CHAOS_MODE"] = chaos
 
     ttl = int(application.config["CACHE_TTL_SECONDS"])
 
@@ -60,6 +73,14 @@ def create_app(
     @application.get("/health")
     def health():
         return jsonify(status="ok"), 200
+
+    @application.get("/demo")
+    def demo():
+        failed = application.config["CHAOS_MODE"] and random.random() < 0.30
+        return jsonify(
+            status="error" if failed else "ok",
+            version=application.config["APP_VERSION"],
+        ), 500 if failed else 200
 
     @application.get("/ready")
     def ready():
@@ -117,4 +138,5 @@ def create_app(
         resources.init_schema()
         click.echo("Database schema initialized")
 
+    configure_metrics(application)
     return application

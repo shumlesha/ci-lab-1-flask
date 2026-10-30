@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ci-lab-flask
+  namespace: staging
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - staging
+  selector:
+    matchLabels:
+      app: ci-lab-flask
+  podTargetLabels:
+  - app
+  podMetricsEndpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
+    scrapeTimeout: 5s

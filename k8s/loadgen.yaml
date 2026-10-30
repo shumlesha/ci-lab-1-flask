@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab4-loadgen
+  namespace: staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lab4-loadgen
+  template:
+    metadata:
+      labels:
+        app: lab4-loadgen
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: load
+        image: localhost:5001/ci-lab-flask:stable
+        imagePullPolicy: Always
+        command:
+        - python
+        - -u
+        - -c
+        - |
+          import json
+          import time
+          from datetime import datetime, timezone
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          while True:
+              started = time.monotonic()
+              code, version = 0, "transport-error"
+              try:
+                  request = Request("http://ci-lab-flask/demo", headers={"Connection": "close"})
+                  try:
+                      response = urlopen(request, timeout=2)
+                  except HTTPError as error:
+                      response = error
+                  with response:
+                      code = response.code
+                      version = json.load(response).get("version", "unknown")
+              except (URLError, TimeoutError, OSError, ValueError):
+                  pass
+              print(json.dumps({"time": datetime.now(timezone.utc).isoformat(),
+                  "status": code, "version": version,
+                  "latency_ms": round((time.monotonic() - started) * 1000, 2)}), flush=True)
+              time.sleep(0.1)
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 96Mi

@@ -6,7 +6,7 @@ metadata:
   labels:
     app: ci-lab-flask
 spec:
-  replicas: 2
+  replicas: 6
   revisionHistoryLimit: 3
   progressDeadlineSeconds: 300
   selector:
@@ -15,14 +15,12 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxUnavailable: 1
+      maxSurge: 2
   template:
     metadata:
       labels:
         app: ci-lab-flask
-      annotations:
-        lab3/source-revision: bootstrap
     spec:
       automountServiceAccountToken: false
       nodeSelector:
@@ -37,8 +35,8 @@ spec:
           type: RuntimeDefault
       initContainers:
       - name: schema-init
-        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:bootstrap
-        imagePullPolicy: IfNotPresent
+        image: localhost:5001/ci-lab-flask:stable
+        imagePullPolicy: Always
         command:
         - python
         - -m
@@ -48,7 +46,7 @@ spec:
         - init-db
         envFrom:
         - secretRef:
-            name: lab3-app
+            name: lab4-app
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -57,21 +55,24 @@ spec:
             - ALL
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 50m
+            memory: 96Mi
           limits:
-            cpu: '1'
+            cpu: 500m
             memory: 256Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: app
-        image: ghcr.io/shumlesha/ci-lab-1-flask-staging:bootstrap
-        imagePullPolicy: IfNotPresent
+        image: localhost:5001/ci-lab-flask:stable
+        imagePullPolicy: Always
         ports:
         - name: http
           containerPort: 5000
         envFrom:
         - secretRef:
-            name: lab3-app
+            name: lab4-app
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -80,10 +81,10 @@ spec:
             - ALL
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 50m
+            memory: 96Mi
           limits:
-            cpu: '1'
+            cpu: 500m
             memory: 256Mi
         startupProbe:
           httpGet:
@@ -112,3 +113,4 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: 64Mi
+  minReadySeconds: 10

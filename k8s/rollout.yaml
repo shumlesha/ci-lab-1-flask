@@ -1,0 +1,135 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: ci-lab-flask
+  namespace: staging
+  labels:
+    app: ci-lab-flask
+spec:
+  replicas: 6
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app: ci-lab-flask
+  strategy:
+    canary:
+      maxSurge: 2
+      maxUnavailable: 0
+      stableService: ci-lab-flask-stable
+      canaryService: ci-lab-flask-canary
+      analysis:
+        templates:
+        - templateName: error-rate-check
+        startingStep: 1
+      steps:
+      - setWeight: 10
+      - pause:
+          duration: 120s
+      - setWeight: 25
+      - pause:
+          duration: 120s
+      - setWeight: 50
+      - pause:
+          duration: 120s
+      - setWeight: 100
+      - pause:
+          duration: 120s
+  template:
+    metadata:
+      labels:
+        app: ci-lab-flask
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: schema-init
+        image: localhost:5001/ci-lab-flask:stable
+        imagePullPolicy: Always
+        command:
+        - python
+        - -m
+        - flask
+        - --app
+        - app:create_app
+        - init-db
+        envFrom:
+        - secretRef:
+            name: lab4-app
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      containers:
+      - name: app
+        image: localhost:5001/ci-lab-flask:stable
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 5000
+        envFrom:
+        - secretRef:
+            name: lab4-app
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 4
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+  minReadySeconds: 10
+  progressDeadlineAbort: true

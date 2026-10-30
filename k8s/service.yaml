@@ -8,6 +8,6 @@ spec:
   selector:
     app: ci-lab-flask
   ports:
-    - name: http
-      port: 5000
-      targetPort: http
+  - name: http
+    port: 80
+    targetPort: http
